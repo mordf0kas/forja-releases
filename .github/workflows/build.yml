@@ -1,0 +1,66 @@
+# Builds Forja's macOS installers from the PRIVATE source repo (mordf0kas/forja)
+# and, if asked, publishes them here. Runs in this public repo because
+# Actions minutes are free for public repos; the source is fetched with a
+# read-only deploy key (secret FORJA_SRC_KEY) and never stored here. Only the
+# installers end up public, in the release. The Windows installer is built
+# locally (packaging/windows/build.ps1) and uploaded to the same release.
+# Run it by hand: Actions -> build -> Run workflow.
+name: build
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch / tag / commit of mordf0kas/forja to build"
+        default: main
+      publish:
+        description: "Upload the installers to release v1.0 here"
+        type: boolean
+        default: false
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - name: Fetch the source (private repo, read-only deploy key)
+        uses: actions/checkout@v4
+        with:
+          repository: mordf0kas/forja
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.FORJA_SRC_KEY }}
+          persist-credentials: false
+      - name: Build the installer
+        run: bash packaging/macos/build.sh ${{ matrix.arch }} out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Forja-macos-${{ matrix.arch }}
+          path: out
+          retention-days: 3
+
+  release:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Upload to the release
+        run: |
+          TAG="v1.0"
+          FILES=(); for f in dist/Forja-v*; do [ -s "$f" ] && FILES+=("$f"); done
+          [ ${#FILES[@]} -gt 0 ] || { echo "::error::nothing to upload"; exit 1; }
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+          else
+            gh release create "$TAG" "${FILES[@]}" --title "Forja $TAG (beta)" --notes-file README.md --prerelease
+          fi
+          printf 'Uploaded to %s:\n%s\n' "$TAG" "$(ls dist)" >> "$GITHUB_STEP_SUMMARY"
